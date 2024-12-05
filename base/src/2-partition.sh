@@ -21,7 +21,7 @@ select_disk() {
     done
     echo "----------------"
 
-    local selection
+    local selection 
     while true; do
         read -p "Select disk number (1-${#disks[@]}): " selection
         if [[ "$selection" =~ ^[0-9]+$ ]] && [ "$selection" -ge 1 ] && [ "$selection" -le "${#disks[@]}" ]; then

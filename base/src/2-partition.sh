@@ -10,7 +10,7 @@ select_disk() {
     if [ ${#disks[@]} -eq 0 ]; then
         log_error "No suitable disks found"
         exit 1
-    }
+    fi
 
     echo "Available disks:"
     echo "----------------"
@@ -85,22 +85,40 @@ create_partitions() {
     echo "Creating partitions on $DISK..."
     
     # Clear existing partition table
-    sgdisk -Z $DISK
+    if ! sgdisk -Z $DISK; then
+        log_error "Failed to clear partition table"
+        exit 1
+    fi
 
     # Create new GPT partition table
-    sgdisk -o $DISK
+    if ! sgdisk -o $DISK; then
+        log_error "Failed to create new GPT partition table"
+        exit 1
+    fi
 
     # Create EFI partition
-    sgdisk -n 1:0:+$EFI_SIZE -t 1:ef00 -c 1:"EFI" $DISK
+    if ! sgdisk -n 1:0:+$EFI_SIZE -t 1:ef00 -c 1:"EFI" $DISK; then
+        log_error "Failed to create EFI partition"
+        exit 1
+    fi
     
     # Create swap partition
-    sgdisk -n 2:0:+$SWAP_SIZE -t 2:8200 -c 2:"swap" $DISK
+    if ! sgdisk -n 2:0:+$SWAP_SIZE -t 2:8200 -c 2:"swap" $DISK; then
+        log_error "Failed to create swap partition"
+        exit 1
+    fi
     
     # Create root partition
-    sgdisk -n 3:0:+$ROOT_SIZE -t 3:8300 -c 3:"root" $DISK
+    if ! sgdisk -n 3:0:+$ROOT_SIZE -t 3:8300 -c 3:"root" $DISK; then
+        log_error "Failed to create root partition"
+        exit 1
+    fi
 
     # Create home partition (use remaining space)
-    sgdisk -n 4:0:0 -t 4:8300 -c 4:"home" $DISK
+    if ! sgdisk -n 4:0:0 -t 4:8300 -c 4:"home" $DISK; then
+        log_error "Failed to create home partition"
+        exit 1
+    fi
 
     log_success "Partitions created successfully"
 }
@@ -110,16 +128,28 @@ format_partitions() {
     echo "Formatting partitions..."
     
     # Format EFI partition
-    mkfs.fat -F32 "${DISK}1"
+    if ! mkfs.fat -F32 "${DISK}1"; then
+        log_error "Failed to format EFI partition"
+        exit 1
+    fi
     
     # Format swap partition
-    mkswap "${DISK}2"
+    if ! mkswap "${DISK}2"; then
+        log_error "Failed to format swap partition"
+        exit 1
+    fi
     
     # Format root partition
-    mkfs.ext4 "${DISK}3"
+    if ! mkfs.ext4 "${DISK}3"; then
+        log_error "Failed to format root partition"
+        exit 1
+    fi
 
     # Format home partition
-    mkfs.ext4 "${DISK}4"
+    if ! mkfs.ext4 "${DISK}4"; then
+        log_error "Failed to format home partition"
+        exit 1
+    fi
     
     log_success "Partitions formatted successfully"
 }
@@ -129,18 +159,30 @@ mount_partitions() {
     echo "Mounting partitions..."
     
     # Mount root partition
-    mount "${DISK}3" /mnt
+    if ! mount "${DISK}3" /mnt; then
+        log_error "Failed to mount root partition"
+        exit 1
+    fi
     
     # Create and mount home directory
     mkdir -p /mnt/home
-    mount "${DISK}4" /mnt/home
+    if ! mount "${DISK}4" /mnt/home; then
+        log_error "Failed to mount home partition"
+        exit 1
+    fi
     
     # Create and mount EFI directory
     mkdir -p /mnt/boot/efi
-    mount "${DISK}1" /mnt/boot/efi
+    if ! mount "${DISK}1" /mnt/boot/efi; then
+        log_error "Failed to mount EFI partition"
+        exit 1
+    fi
     
     # Enable swap
-    swapon "${DISK}2"
+    if ! swapon "${DISK}2"; then
+        log_error "Failed to enable swap"
+        exit 1
+    fi
     
     log_success "Partitions mounted successfully"
 }
@@ -159,5 +201,3 @@ main() {
 
 # Run the main function
 main
-
-

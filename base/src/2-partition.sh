@@ -4,27 +4,31 @@ source helpers.sh  # source the helper functions for logging
 
 # Function to let user select disk
 select_disk() {
-    # Get list of available disks
-    local disks=($(lsblk -dpno NAME | grep -v "loop" | grep -v "sr"))
-    
+    # Get list of disks, excluding unwanted devices
+    local disks=($(lsblk -dpno NAME | grep -Ev "loop|sr|rom|airootfs|mmcblk.*boot[01]|mmcblk.*rpmb"))
+
+    # Check if any disks were found
     if [ ${#disks[@]} -eq 0 ]; then
         log_error "No suitable disks found"
         exit 1
     fi
 
+    # Display available disks
     echo "Available disks:"
     echo "----------------"
     local i=1
     for disk in "${disks[@]}"; do
-        echo "$i) $disk ($(lsblk -dno SIZE,MODEL $disk))"
+        local disk_info=$(lsblk -dno SIZE,MODEL "$disk")
+        echo "$i) $disk ($disk_info)"
         ((i++))
     done
     echo "----------------"
 
-    local selection 
+    # Get valid disk selection from user
+    local selection
     while true; do
         read -p "Select disk number (1-${#disks[@]}): " selection
-        if [[ "$selection" =~ ^[0-9]+$ ]] && [ "$selection" -ge 1 ] && [ "$selection" -le "${#disks[@]}" ]; then
+        if [[ "$selection" =~ ^[0-9]+$ ]] && ((selection >= 1 && selection <= ${#disks[@]})); then
             break
         fi
         log_warning "Please enter a valid number between 1 and ${#disks[@]}"
@@ -32,12 +36,15 @@ select_disk() {
 
     DISK="${disks[$((selection-1))]}"
     
-    # Double confirmation due to destructive operation
-    echo -e "${RED}WARNING: All data on $DISK will be erased!${NC}"
-    echo -e "${RED}         Size: $(lsblk -dno SIZE $DISK)${NC}"
-    echo -e "${RED}         Model: $(lsblk -dno MODEL $DISK)${NC}"
+    # Get disk info for confirmation
+    local disk_size=$(lsblk -dno SIZE "$DISK")
+    local disk_model=$(lsblk -dno MODEL "$DISK")
     
-    local confirm
+    # Double confirmation for data erasure
+    echo -e "${RED}WARNING: All data on $DISK will be erased!${NC}"
+    echo -e "${RED}         Size: $disk_size${NC}"
+    echo -e "${RED}         Model: $disk_model${NC}"
+    
     read -p "Type 'yes' to confirm: " confirm
     if [[ "$confirm" != "yes" ]]; then
         log_error "Operation cancelled by user"
@@ -67,9 +74,6 @@ get_partition_sizes() {
         log_warning "Please enter a valid size (e.g., 30G, 50G)"
     done
 
-    # Inform about home partition
-    log_info "Home partition will use all remaining disk space"
-
     # Get swap size
     while true; do
         read -p "Enter swap partition size (e.g., 2G, 4G): " SWAP_SIZE
@@ -77,6 +81,21 @@ get_partition_sizes() {
             break
         fi
         log_warning "Please enter a valid size (e.g., 2G, 4G)"
+    done
+
+    
+    # Get home partition size (optional)
+    while true; do
+        read -p "Enter home partition size (empty for remaining space, or e.g., 100G): " HOME_SIZE
+        if [[ -z "$HOME_SIZE" ]]; then
+            log_info "Home partition will use remaining disk space"
+            break
+        elif [[ "$HOME_SIZE" =~ ^[0-9]+[G]$ ]]; then
+            log_info "Home partition will be created with size: $HOME_SIZE"
+            break
+        else
+            log_warning "Please enter a valid size (e.g., 100G) or press Enter for remaining space"
+        fi
     done
 }
 

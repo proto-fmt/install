@@ -26,5 +26,5 @@ log_info() {
 
 # Print a separator line
 print_separator() {
-    echo "123--------------------------------"
+    echo "--------------------------------"
 }

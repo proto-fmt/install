@@ -61,8 +61,14 @@ get_partition_sizes() {
     )
 
     # Helper functions
-    gb_to_bytes() { echo "$1 * 1024^3" | bc; }
-    bytes_to_gb() { echo "$1" | awk '{printf "%.1f", $1/1024^3}'; }
+    gb_to_bytes() { 
+        # Use bc for floating point arithmetic
+        echo "scale=0; $1 * 1024^3 / 1" | bc
+    }
+    bytes_to_gb() { 
+        # Use bc for floating point arithmetic with 1 decimal place
+        echo "scale=1; $1 / 1024^3" | bc
+    }
 
     # Function to get and validate partition size
     get_partition_size() {
@@ -86,11 +92,13 @@ get_partition_sizes() {
 
             # Validate size format and convert
             local size=${size_input%G}
+            # Allow decimal numbers with optional decimal point
             if [[ ! "$size" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
-                log_warning "Please enter a valid number (e.g. 0.5G, 15G, 250G)"
+                log_warning "Please enter a valid number (e.g. 0.5G, 15.5G, 250G)"
                 continue
             fi
 
+            # Convert to bytes using bc for floating point
             local size_bytes=$(gb_to_bytes "$size")
             if ((size_bytes >= available_bytes)); then
                 log_warning "Size must be less than $(bytes_to_gb "$available_bytes")G"
@@ -119,7 +127,7 @@ get_partition_sizes() {
     echo -e "\nPartition Layout:"
     print_separator
     for part in "${!sizes[@]}"; do
-        printf "%s: %.1fG\n" "$part" "$(bytes_to_gb "${sizes[$part]}")"
+        printf "%s: %sG\n" "$part" "$(bytes_to_gb "${sizes[$part]}")"
     done
 
     local remaining_bytes=$((total_bytes - used_bytes))

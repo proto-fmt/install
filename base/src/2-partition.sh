@@ -50,115 +50,80 @@ select_disk() {
 
 # Get partition sizes from user
 get_partition_sizes() {
-    # Get total disk size in bytes
+    # Get total disk size in bytes and initialize variables
     local total_bytes=$(lsblk -ndo SIZE "$DISK" --bytes)
-    local total_gb=$(printf "%.2f" $(echo "scale=2; $total_bytes/1024/1024/1024" | bc))
     local used_bytes=0
-
-    # Get partition sizes
     local sizes=()
+    local partitions=("EFI" "Root" "Swap" "Home")
+    local examples=("1G, 0.5G" "5G" "5G" "20G")
 
-    # Get EFI partition size
-    while true; do
-        local available_bytes=$((total_bytes - used_bytes))
-        local available_gb=$(printf "%.2f" $(echo "scale=2; $available_bytes/1024/1024/1024" | bc))
+    # Helper function to convert GB to bytes
+    gb_to_bytes() {
+        echo "scale=0; $1*1024*1024*1024/1" | bc
+    }
+
+    # Helper function to convert bytes to GB string
+    bytes_to_gb() {
+        printf "%.1f" $(echo "scale=1; $1/1024/1024/1024" | bc)
+    }
+
+    # Get size for each partition
+    for i in "${!partitions[@]}"; do
+        local is_last=$((i == ${#partitions[@]} - 1))
         
-        echo "Available: ${available_gb}G"
-        read -p "EFI partition size (e.g. 1G, 0.5G): " size_input
+        while true; do
+            local available_bytes=$((total_bytes - used_bytes))
+            local available_gb=$(bytes_to_gb "$available_bytes")
+            
+            echo "Available: ${available_gb}G"
+            local prompt="${partitions[$i]} partition size (e.g. ${examples[$i]}"
+            [[ $is_last ]] && prompt+=", or press Enter to use remaining space"
+            read -p "$prompt): " size_input
 
-        # Remove 'G' suffix and validate input
-        size=${size_input%G}
-        if [[ ! "$size" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
-            log_warning "Please enter a valid number followed by G (e.g. 5G)"
-            continue
-        fi
+            # Use remaining space for last partition if Enter pressed
+            if [[ $is_last && -z "$size_input" ]]; then
+                sizes+=("$available_bytes")
+                used_bytes=$total_bytes
+                break
+            fi
 
-        # Convert GB to bytes
-        local size_bytes=$(echo "scale=0; $size*1024*1024*1024/1" | bc)
+            # Validate input and convert to bytes
+            size=${size_input%G}
+            if [[ ! "$size" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+                log_warning "Please enter a valid number followed by G (e.g. ${examples[$i]})"
+                continue
+            fi
 
-        # Check if size exceeds available space
-        if ((size_bytes >= available_bytes)); then
-            log_warning "Size must be less than ${available_gb}G"
-            continue
-        fi
+            local size_bytes=$(gb_to_bytes "$size")
+            if ((size_bytes >= available_bytes)); then
+                log_warning "Size must be less than ${available_gb}G"
+                continue
+            fi
 
-        sizes+=("$size_bytes")
-        used_bytes=$((used_bytes + size_bytes))
-        break
+            sizes+=("$size_bytes")
+            used_bytes=$((used_bytes + size_bytes))
+            break
+        done
     done
 
-    # Get Root partition size
-    while true; do
-        local available_bytes=$((total_bytes - used_bytes))
-        local available_gb=$(printf "%.2f" $(echo "scale=2; $available_bytes/1024/1024/1024" | bc))
-        
-        echo "Available: ${available_gb}G"
-        read -p "Root partition size (e.g. 5G): " size_input
-
-        # Remove 'G' suffix and validate input
-        size=${size_input%G}
-        if [[ ! "$size" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
-            log_warning "Please enter a valid number followed by G (e.g. 5G)"
-            continue
-        fi
-
-        # Convert GB to bytes
-        local size_bytes=$(echo "scale=0; $size*1024*1024*1024/1" | bc)
-
-        # Check if size exceeds available space
-        if ((size_bytes >= available_bytes)); then
-            log_warning "Size must be less than ${available_gb}G"
-            continue
-        fi
-
-        sizes+=("$size_bytes")
-        used_bytes=$((used_bytes + size_bytes))
-        break
-    done
-
-    # Get Swap partition size
-    while true; do
-        local available_bytes=$((total_bytes - used_bytes))
-        local available_gb=$(printf "%.2f" $(echo "scale=2; $available_bytes/1024/1024/1024" | bc))
-        
-        echo "Available: ${available_gb}G"
-        read -p "Swap partition size (e.g. 5G): " size_input
-
-        # Remove 'G' suffix and validate input
-        size=${size_input%G}
-        if [[ ! "$size" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
-            log_warning "Please enter a valid number followed by G (e.g. 5G)"
-            continue
-        fi
-
-        # Convert GB to bytes
-        local size_bytes=$(echo "scale=0; $size*1024*1024*1024/1" | bc)
-
-        # Check if size exceeds available space
-        if ((size_bytes >= available_bytes)); then
-            log_warning "Size must be less than ${available_gb}G"
-            continue
-        fi
-
-        sizes+=("$size_bytes")
-        used_bytes=$((used_bytes + size_bytes))
-        break
-    done
-
-    # Assign partition sizes in bytes
+    # Assign partition sizes
     EFI_SIZE="${sizes[0]}"
-    ROOT_SIZE="${sizes[1]}"
+    ROOT_SIZE="${sizes[1]}" 
     SWAP_SIZE="${sizes[2]}"
-    HOME_SIZE="$((total_bytes - used_bytes))"
+    HOME_SIZE="${sizes[3]}"
 
     # Show partition layout summary
-    echo
-    echo "Partition Layout:"
+    echo -e "\nPartition Layout:"
     print_separator
-    echo "EFI:  $(printf "%.2fG" $(echo "scale=2; $EFI_SIZE/1024/1024/1024" | bc))"
-    echo "Root: $(printf "%.2fG" $(echo "scale=2; $ROOT_SIZE/1024/1024/1024" | bc))"
-    echo "Swap: $(printf "%.2fG" $(echo "scale=2; $SWAP_SIZE/1024/1024/1024" | bc))"
-    echo "Home: $(printf "%.2fG" $(echo "scale=2; $HOME_SIZE/1024/1024/1024" | bc)) (remaining space)"
+    echo "EFI:  $(bytes_to_gb "$EFI_SIZE")G"
+    echo "Root: $(bytes_to_gb "$ROOT_SIZE")G"
+    echo "Swap: $(bytes_to_gb "$SWAP_SIZE")G"
+    echo "Home: $(bytes_to_gb "$HOME_SIZE")G"
+    
+    local remaining_bytes=$((total_bytes - used_bytes))
+    if ((remaining_bytes > 0)); then
+        echo "Remaining unallocated space: $(bytes_to_gb "$remaining_bytes")G"
+    fi
     print_separator
 
     read -p "Confirm layout? (yes/no): " confirm

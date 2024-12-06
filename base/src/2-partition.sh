@@ -51,88 +51,116 @@ select_disk() {
 
 # Get partition sizes from user
 get_partition_sizes() {
-    # Function to validate size format
+    # Get total disk size in MB
+    local total_size_mb=$(lsblk -b "$DISK" | awk 'NR==1{print $4/1024/1024}' | cut -d'.' -f1)
+    local remaining_mb=$total_size_mb
+    
+    # Function to validate size format and convert to MB
     validate_size() {
         local size=$1
-        local unit=$2  # "M" or "G" or "MG" for both
-        [[ "$size" =~ ^[0-9]+[$unit]$ ]]
+        local unit=$2  # "M" or "G"
+        if [[ "$size" =~ ^[0-9]+$unit$ ]]; then
+            if [ "$unit" = "G" ]; then
+                echo $((${size%G} * 1024))
+            else
+                echo ${size%M}
+            fi
+            return 0
+        fi
+        return 1
     }
 
     # Get EFI partition size
     while true; do
-        read -p "Enter EFI partition size (e.g., 512M, 1G): " EFI_SIZE
-        if validate_size "$EFI_SIZE" "MG"; then
+        echo "Remaining space: ${remaining_mb}M ($(echo "scale=2; $remaining_mb/1024" | bc)G)"
+        read -p "Enter EFI partition size (e.g., 512M): " EFI_SIZE
+        if size_mb=$(validate_size "$EFI_SIZE" "M"); then
+            remaining_mb=$((remaining_mb - size_mb))
             break
         fi
-        log_warning "Please enter a valid size (e.g., 512M, 1G)"
+        log_warning "Please enter a valid size in megabytes (e.g., 512M)"
     done
 
     # Get root partition size
     while true; do
-        read -p "Enter ROOT partition size (e.g., 30G, 50G): " ROOT_SIZE
-        if validate_size "$ROOT_SIZE" "G"; then
+        echo "Remaining space: ${remaining_mb}M ($(echo "scale=2; $remaining_mb/1024" | bc)G)"
+        read -p "Enter ROOT partition size (e.g., 30G): " ROOT_SIZE
+        if size_mb=$(validate_size "$ROOT_SIZE" "G"); then
+            remaining_mb=$((remaining_mb - size_mb))
             break
         fi
-        log_warning "Please enter a valid size (e.g., 30G, 50G)"
+        log_warning "Please enter a valid size in gigabytes (e.g., 30G)"
     done
 
     # Get swap size
     while true; do
-        read -p "Enter SWAP partition size (e.g., 2G, 4G): " SWAP_SIZE
-        if validate_size "$SWAP_SIZE" "G"; then
+        echo "Remaining space: ${remaining_mb}M ($(echo "scale=2; $remaining_mb/1024" | bc)G)"
+        read -p "Enter SWAP partition size (e.g., 2G): " SWAP_SIZE
+        if size_mb=$(validate_size "$SWAP_SIZE" "G"); then
+            remaining_mb=$((remaining_mb - size_mb))
             break
         fi
-        log_warning "Please enter a valid size (e.g., 2G, 4G)"
+        log_warning "Please enter a valid size in gigabytes (e.g., 2G)"
     done
 
     # Get home partition size (optional)
     while true; do
+        echo "Remaining space: ${remaining_mb}M ($(echo "scale=2; $remaining_mb/1024" | bc)G)"
         read -p "Enter HOME partition size (empty for remaining space, or e.g., 100G): " HOME_SIZE
-        
-        # Calculate total and used space
-        local total_size=$(lsblk -dno SIZE --bytes "$DISK")
-        local efi_size_bytes=$(numfmt --from=iec "$EFI_SIZE")
-        local root_size_bytes=$(numfmt --from=iec "$ROOT_SIZE")
-        local swap_size_bytes=$(numfmt --from=iec "$SWAP_SIZE")
-        local used_space=$((efi_size_bytes + root_size_bytes + swap_size_bytes))
-        
         if [[ -z "$HOME_SIZE" ]]; then
-            local remaining_bytes=$((total_size - used_space))
-            HOME_SIZE="$((remaining_bytes / 1024 / 1024 / 1024))G"
-            log_info "Home partition will use remaining disk space: $HOME_SIZE ($(numfmt --to=iec-i --suffix=B $remaining_bytes))"
+            HOME_SIZE="${remaining_mb}M"
+            log_info "Home partition will use remaining disk space (${remaining_mb}M)"
+            remaining_mb=0
             break
-        elif validate_size "$HOME_SIZE" "G"; then
-            local home_size_bytes=$(numfmt --from=iec "$HOME_SIZE")
-            local unused_bytes=$((total_size - used_space - home_size_bytes))
-            
-            log_info "Home partition will be created with size: $HOME_SIZE ($(numfmt --to=iec-i --suffix=B ${home_size_bytes}))"
-            
-            if ((unused_bytes > 0)); then
-                log_warning "Warning: $(numfmt --to=iec-i --suffix=B ${unused_bytes}) of disk space will remain unused"
+        elif size_mb=$(validate_size "$HOME_SIZE" "G"); then
+            if [ $size_mb -gt $remaining_mb ]; then
+                log_warning "Requested size exceeds remaining space"
+                continue
             fi
+            remaining_mb=$((remaining_mb - size_mb))
+            log_info "Home partition will be created with size: $HOME_SIZE"
             break
         else
-            log_warning "Please enter a valid size (e.g., 100G) or press Enter for remaining space"
+            log_warning "Please enter a valid size in gigabytes (e.g., 100G) or press Enter for remaining space"
         fi
     done
 
-    # Display summary and get confirmation
-    echo -e "\nPartition Configuration Summary:"
-    echo "--------------------------------"
-    echo "EFI Partition:  $EFI_SIZE"
-    echo "Root Partition: $ROOT_SIZE"
-    echo "Swap Partition: $SWAP_SIZE"
-    echo "Home Partition: $HOME_SIZE"
-    echo "--------------------------------"
-    
-    read -p "Is this configuration correct? (yes/no): " confirm
-    if [[ "$confirm" != "yes" ]]; then
-        log_error "Configuration cancelled. Please start over."
-        get_partition_sizes
-    else
-        log_success "Partition configuration confirmed"
-        return 0
+    # Ask about remaining space if any
+    if [ $remaining_mb -gt 0 ]; then
+        echo
+        echo "There is still ${remaining_mb}M ($(echo "scale=2; $remaining_mb/1024" | bc)G) of unallocated space"
+        read -p "Would you like to add it to the home partition? (yes/no): " add_remaining
+        if [[ "$add_remaining" == "yes" ]]; then
+            if [[ "$HOME_SIZE" =~ M$ ]]; then
+                HOME_SIZE="$((${HOME_SIZE%M} + remaining_mb))M"
+            else
+                HOME_SIZE="$((${HOME_SIZE%G} * 1024 + remaining_mb))M"
+            fi
+            remaining_mb=0
+            log_info "Updated home partition size: $HOME_SIZE"
+        fi
     fi
+
+    # Show summary and ask for confirmation
+    echo
+    echo "Partition layout summary:"
+    echo "------------------------"
+    echo "EFI partition:  $EFI_SIZE"
+    echo "Root partition: $ROOT_SIZE"
+    echo "Swap partition: $SWAP_SIZE"
+    echo "Home partition: $HOME_SIZE"
+    if [ $remaining_mb -gt 0 ]; then
+        echo "Unallocated:   ${remaining_mb}M"
+    fi
+    echo "------------------------"
+    
+    read -p "Do you confirm this partition layout? (yes/no): " confirm
+    if [[ "$confirm" != "yes" ]]; then
+        log_error "Operation cancelled by user"
+        exit 1
+    fi
+    
+    log_success "Partition layout confirmed"
 }
 
 # Create partitions

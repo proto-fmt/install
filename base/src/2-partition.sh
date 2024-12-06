@@ -52,9 +52,13 @@ get_partition_sizes() {
     # Get total disk size in bytes and initialize variables
     local total_bytes=$(lsblk -ndo SIZE "$DISK" --bytes)
     local used_bytes=0
-    local partitions=("EFI" "Root" "Swap" "Home")
-    local examples=("1G" "20G" "4G" "30G")
     local -A sizes # Associative array to store partition sizes
+    local -A partition_info=(
+        ["EFI"]="1G false"
+        ["Root"]="30G false" 
+        ["Swap"]="4G false"
+        ["Home"]="30G true"
+    )
 
     # Helper functions
     gb_to_bytes() { echo "$1 * 1024^3" | bc; }
@@ -64,12 +68,10 @@ get_partition_sizes() {
     get_partition_size() {
         local name=$1
         local example=$2
-        local allow_empty=${3:-false}
+        local allow_empty=$3
         local prompt="$name partition size (e.g. $example): "
         
-        if [[ "$allow_empty" == "true" ]]; then
-            prompt+="or press Enter to use all remaining space"
-        fi
+        [[ "$allow_empty" == "true" ]] && prompt+="or press Enter to use all remaining space"
 
         while true; do
             local available_bytes=$((total_bytes - used_bytes))
@@ -102,10 +104,10 @@ get_partition_sizes() {
     }
 
     # Get sizes for each partition
-    get_partition_size "EFI" "1G"
-    get_partition_size "Root" "30G"
-    get_partition_size "Swap" "4G"
-    get_partition_size "Home" "30G" true
+    for part in "${!partition_info[@]}"; do
+        read example allow_empty <<< "${partition_info[$part]}"
+        get_partition_size "$part" "$example" "$allow_empty"
+    done
 
     # Export sizes to global variables
     EFI_SIZE=${sizes[EFI]}
@@ -116,14 +118,12 @@ get_partition_sizes() {
     # Show partition layout summary
     echo -e "\nPartition Layout:"
     print_separator
-    for part in "${partitions[@]}"; do
+    for part in "${!sizes[@]}"; do
         printf "%s: %.1fG\n" "$part" "$(bytes_to_gb "${sizes[$part]}")"
     done
 
     local remaining_bytes=$((total_bytes - used_bytes))
-    if ((remaining_bytes > 0)); then
-        echo "Remaining unallocated space: $(bytes_to_gb "$remaining_bytes")G"
-    fi
+    ((remaining_bytes > 0)) && echo "Remaining unallocated space: $(bytes_to_gb "$remaining_bytes")G"
     print_separator
 
     read -p "Confirm layout? (yes/no): " confirm

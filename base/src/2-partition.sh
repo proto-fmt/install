@@ -1,5 +1,6 @@
 #!/bin/bash
 
+clear
 source helpers.sh  # source the helper functions for logging
 
 # Function to let user select disk
@@ -36,17 +37,16 @@ select_disk() {
     DISK="${disks[$((selection-1))]}"
     
     # Confirmation for data erasure
-    local disk_info="${disk_info[$((selection-1))]}"
     echo -e "${RED}WARNING: All data on $DISK will be erased!${NC}"
-    echo -e "${RED}         $disk_info${NC}"
-    
+    echo -e "${RED}         ${disk_info[$((selection-1))]}${NC}"
     read -p "Type 'yes' to confirm: " confirm
     if [[ "$confirm" != "yes" ]]; then
         log_error "Operation cancelled by user"
-        exit 1
+        return 1
     fi
 
-    log_info "Selected disk: $DISK"
+    log_success "Selected disk: $DISK"
+    return 0
 }
 
 # Get partition sizes from user
@@ -89,7 +89,14 @@ get_partition_sizes() {
     while true; do
         read -p "Enter HOME partition size (empty for remaining space, or e.g., 100G): " HOME_SIZE
         if [[ -z "$HOME_SIZE" ]]; then
-            log_info "Home partition will use remaining disk space"
+            # Calculate remaining space in G
+            local total_size=$(lsblk -dno SIZE --bytes "$DISK")
+            local efi_size_bytes=$(numfmt --from=iec "$EFI_SIZE")
+            local root_size_bytes=$(numfmt --from=iec "$ROOT_SIZE")
+            local swap_size_bytes=$(numfmt --from=iec "$SWAP_SIZE")
+            local remaining_bytes=$((total_size - efi_size_bytes - root_size_bytes - swap_size_bytes))
+            HOME_SIZE="$((remaining_bytes / 1024 / 1024 / 1024))G"
+            log_info "Home partition will use remaining disk space: $HOME_SIZE"
             break
         elif validate_size "$HOME_SIZE" "G"; then
             log_info "Home partition will be created with size: $HOME_SIZE"
@@ -98,6 +105,24 @@ get_partition_sizes() {
             log_warning "Please enter a valid size (e.g., 100G) or press Enter for remaining space"
         fi
     done
+
+    # Display summary and get confirmation
+    echo -e "\nPartition Configuration Summary:"
+    echo "--------------------------------"
+    echo "EFI Partition:  $EFI_SIZE"
+    echo "Root Partition: $ROOT_SIZE"
+    echo "Swap Partition: $SWAP_SIZE"
+    echo "Home Partition: $HOME_SIZE"
+    echo "--------------------------------"
+    
+    read -p "Is this configuration correct? (yes/no): " confirm
+    if [[ "$confirm" != "yes" ]]; then
+        log_error "Configuration cancelled. Please start over."
+        get_partition_sizes
+    else
+        log_success "Partition configuration confirmed"
+        return 0
+    fi
 }
 
 # Create partitions
@@ -189,7 +214,9 @@ mount_partitions() {
 
 # Main function
 main() {
-    select_disk
+    if ! select_disk; then
+        exit 1
+    fi
     get_partition_sizes
     create_partitions
     format_partitions

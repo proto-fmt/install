@@ -1,5 +1,7 @@
 #!/bin/bash
 
+clear
+
 source helpers.sh  # source the helper functions for logging
 
 # Define constants ONLY for this file

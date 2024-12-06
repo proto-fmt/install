@@ -58,100 +58,76 @@ get_partition_sizes() {
     # Function to validate size format and convert to MB
     validate_size() {
         local size=$1
-        local unit=$2  # "M" or "G"
-        if [[ "$size" =~ ^[0-9]+$unit$ ]]; then
+        local unit=${size: -1}  # Get last character
+        local number=${size%[MG]}  # Remove unit
+        
+        if [[ "$number" =~ ^[0-9]+$ ]] && [[ "$unit" =~ [MG] ]]; then
             if [ "$unit" = "G" ]; then
-                echo $((${size%G} * 1024))
+                echo $((number * 1024))
             else
-                echo ${size%M}
+                echo "$number"
             fi
             return 0
         fi
         return 1
     }
 
-    # Get EFI partition size
-    while true; do
-        echo "Remaining space: ${remaining_mb}M ($(echo "scale=2; $remaining_mb/1024" | bc)G)"
-        read -p "Enter EFI partition size (e.g., 512M): " EFI_SIZE
-        if size_mb=$(validate_size "$EFI_SIZE" "M"); then
-            remaining_mb=$((remaining_mb - size_mb))
-            break
-        fi
-        log_warning "Please enter a valid size in megabytes (e.g., 512M)"
-    done
-
-    # Get root partition size
-    while true; do
-        echo "Remaining space: ${remaining_mb}M ($(echo "scale=2; $remaining_mb/1024" | bc)G)"
-        read -p "Enter ROOT partition size (e.g., 30G): " ROOT_SIZE
-        if size_mb=$(validate_size "$ROOT_SIZE" "G"); then
-            remaining_mb=$((remaining_mb - size_mb))
-            break
-        fi
-        log_warning "Please enter a valid size in gigabytes (e.g., 30G)"
-    done
-
-    # Get swap size
-    while true; do
-        echo "Remaining space: ${remaining_mb}M ($(echo "scale=2; $remaining_mb/1024" | bc)G)"
-        read -p "Enter SWAP partition size (e.g., 2G): " SWAP_SIZE
-        if size_mb=$(validate_size "$SWAP_SIZE" "G"); then
-            remaining_mb=$((remaining_mb - size_mb))
-            break
-        fi
-        log_warning "Please enter a valid size in gigabytes (e.g., 2G)"
-    done
-
-    # Get home partition size (optional)
-    while true; do
-        echo "Remaining space: ${remaining_mb}M ($(echo "scale=2; $remaining_mb/1024" | bc)G)"
-        read -p "Enter HOME partition size (empty for remaining space, or e.g., 100G): " HOME_SIZE
-        if [[ -z "$HOME_SIZE" ]]; then
-            HOME_SIZE="${remaining_mb}M"
-            log_info "Home partition will use remaining disk space (${remaining_mb}M)"
-            remaining_mb=0
-            break
-        elif size_mb=$(validate_size "$HOME_SIZE" "G"); then
-            if [ $size_mb -gt $remaining_mb ]; then
-                log_warning "Requested size exceeds remaining space"
-                continue
+    # Function to get partition size
+    get_size() {
+        local name=$1
+        local unit=$2
+        local example=$3
+        local var_name=$4
+        
+        while true; do
+            echo "Remaining space: ${remaining_mb}M ($(echo "scale=2; $remaining_mb/1024" | bc)G)"
+            read -p "Enter $name partition size (e.g., $example): " size
+            if size_mb=$(validate_size "$size"); then
+                if [ "$name" = "ENCRYPTED" ] && [ $size_mb -gt $remaining_mb ]; then
+                    log_warning "Requested size exceeds remaining space"
+                    continue
+                fi
+                remaining_mb=$((remaining_mb - size_mb))
+                eval "$var_name='$size'"
+                break
             fi
-            remaining_mb=$((remaining_mb - size_mb))
-            log_info "Home partition will be created with size: $HOME_SIZE"
-            break
-        else
-            log_warning "Please enter a valid size in gigabytes (e.g., 100G) or press Enter for remaining space"
-        fi
-    done
+            log_warning "Please enter a valid size in $unit (e.g., $example)"
+        done
+    }
 
-    # Ask about remaining space if any
-    if [ $remaining_mb -gt 0 ]; then
+    # Get partition sizes
+    get_size "EFI" "megabytes" "512M" "EFI_SIZE"
+    get_size "ROOT" "gigabytes" "30G" "ROOT_SIZE"
+    get_size "SWAP" "gigabytes" "2G" "SWAP_SIZE"
+    get_size "ENCRYPTED" "gigabytes" "20G" "CRYPT_SIZE"
+
+    # Get encryption password
+    while true; do
         echo
-        echo "There is still ${remaining_mb}M ($(echo "scale=2; $remaining_mb/1024" | bc)G) of unallocated space"
-        read -p "Would you like to add it to the home partition? (yes/no): " add_remaining
-        if [[ "$add_remaining" == "yes" ]]; then
-            if [[ "$HOME_SIZE" =~ M$ ]]; then
-                HOME_SIZE="$((${HOME_SIZE%M} + remaining_mb))M"
-            else
-                HOME_SIZE="$((${HOME_SIZE%G} * 1024 + remaining_mb))M"
-            fi
-            remaining_mb=0
-            log_info "Updated home partition size: $HOME_SIZE"
+        read -s -p "Enter encryption password: " CRYPT_PASSWORD
+        echo
+        read -s -p "Confirm encryption password: " CRYPT_PASSWORD_CONFIRM
+        echo
+        
+        if [ "$CRYPT_PASSWORD" = "$CRYPT_PASSWORD_CONFIRM" ] && [ ${#CRYPT_PASSWORD} -ge 8 ]; then
+            break
         fi
-    fi
+        log_warning "$([ "$CRYPT_PASSWORD" != "$CRYPT_PASSWORD_CONFIRM" ] && echo "Passwords do not match" || echo "Password must be at least 8 characters long")"
+    done
+
+    # Home partition uses remaining space
+    HOME_SIZE="${remaining_mb}M"
+    log_info "Home partition will use remaining disk space (${remaining_mb}M / $(echo "scale=2; $remaining_mb/1024" | bc)G)"
 
     # Show summary and ask for confirmation
     echo
     echo "Partition layout summary:"
     echo "------------------------"
-    echo "EFI partition:  $EFI_SIZE"
-    echo "Root partition: $ROOT_SIZE"
-    echo "Swap partition: $SWAP_SIZE"
-    echo "Home partition: $HOME_SIZE"
-    if [ $remaining_mb -gt 0 ]; then
-        echo "Unallocated:   ${remaining_mb}M"
-    fi
+    echo "EFI partition:       $EFI_SIZE"
+    echo "Root partition:      $ROOT_SIZE" 
+    echo "Swap partition:      $SWAP_SIZE"
+    echo "Encrypted partition: $CRYPT_SIZE"
+    echo "Home partition:      $HOME_SIZE"
     echo "------------------------"
     
     read -p "Do you confirm this partition layout? (yes/no): " confirm

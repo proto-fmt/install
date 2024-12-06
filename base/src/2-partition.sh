@@ -3,12 +3,6 @@
 source helpers.sh  # source the helper functions for logging
 
 
-# Global variable.
-# Only used in this file. 
-# Don't edit.
-DISK="" # Disk name (e.g. /dev/sda)
-
-
 # Function to let user select disk
 select_disk() {
     clear
@@ -22,6 +16,9 @@ select_disk() {
     # Get disk selection and validate
     while true; do
         read -p "Enter disk name (e.g. /dev/sda): " DISK
+
+        # Remove trailing slashes from disk name
+        DISK=${DISK%/}
         
         # Validate disk exists
         if ! lsblk "$DISK" &>/dev/null; then
@@ -32,15 +29,15 @@ select_disk() {
         # Check for system devices that shouldn't be used
         local system_devices="loop|sr|rom|airootfs" 
         if [[ "$DISK" =~ $system_devices ]]; then
-            log_warning "System device selected. This is not recommended."
+            log_warning "Invalid! System device selected."
             continue
         fi
 
         # Check disk size
-        local min_size=$((10 * 1024 * 1024 * 1024)) # 10GB in bytes
-        local disk_size=$(lsblk -dbno SIZE "$DISK")
-        if [ "$disk_size" -lt "$min_size" ]; then
-            log_warning "Disk is too small. Minimum 10GB required"
+        local MIN_DISK_SIZE=10  # Minimum required disk size in GB
+        local disk_size=$(lsblk -ndo SIZE "$DISK" | tr -d 'G')
+        if (( disk_size < MIN_DISK_SIZE )); then
+            log_warning "Disk size must be at least ${MIN_DISK_SIZE}GB. Selected disk is ${disk_size}GB"
             continue
         fi
 
@@ -48,81 +45,73 @@ select_disk() {
     done
 
     # Confirm data erasure
-    
-    echo -e "${RED}WARNING: All data on $DISK will be erased!${NC}"
+    echo -e "${RED}WARNING: All data on $DISK (${lsblk -ndo SIZE "$DISK"}) will be erased!${NC}"
     read -p "Continue? (y/n): " confirm
-    [[ "$confirm" != "y" ]] && return 1
+    if [[ "$confirm" != "y" ]]; then
+        log_error "Canceled by user"
+        return 1
+    fi
 
-    log_success "Selected disk: $DISK"
+    log_success "Selected disk: $DISK ($(lsblk -ndo SIZE "$DISK"))"
     return 0
 }
 
 # Get partition sizes from user
 get_partition_sizes() {
-    # Get total disk size in bytes and convert to GB
-    local total_bytes=$(lsblk -dbno SIZE "$DISK")
-    local total_gb=$(echo "scale=2; $total_bytes / (1024 * 1024 * 1024)" | bc)
-    local remaining_gb=$total_gb
-
-    echo "Total disk size: ${total_gb}G"
-    echo
-
-    # Function to validate and convert partition size
-    get_partition_size() {
-        local size_prompt=$1
-        local max_size=$2
-        local var_name=$3
-
-        while true; do
-            echo "Remaining space: ${max_size}G"
-            read -p "$size_prompt (e.g. ${4}): " size
-
-            if [[ ! "$size" =~ ^[0-9]+[GM]$ ]]; then
-                log_warning "Please enter a valid size (e.g. 512M or 1G)"
-                continue
-            fi
-
-            # Convert to GB for calculations
-            local size_gb
-            if [[ "$size" =~ M$ ]]; then
-                size_gb=$(( ${size%M} / 1024 ))
-            else
-                size_gb=${size%G}
-            fi
-
-            if [ "$size_gb" -ge "$max_size" ]; then
-                log_warning "Please enter a valid size less than ${max_size}G"
-                continue
-            fi
-
-            eval "$var_name='$size'"
-            echo "$size_gb"
-            break
-        done
-    }
+    # Get total disk size in bytes
+    local total_bytes=$(lsblk -ndo SIZE "$DISK" --bytes)
+    local total_gb=$(printf "%.2f" $(echo "scale=2; $total_bytes/1024/1024/1024" | bc))
+    local used_bytes=0
 
     # Get partition sizes
-    local efi_gb=$(get_partition_size "EFI partition size" "$remaining_gb" "EFI_SIZE" "512M or 1G")
-    remaining_gb=$((remaining_gb - efi_gb))
-    log_success "EFI partition size set to $EFI_SIZE"
+    local partitions=("EFI" "Root" "Swap")
+    local sizes=()
 
-    local root_gb=$(get_partition_size "ROOT partition size" "$remaining_gb" "ROOT_SIZE" "20G or 20480M")
-    remaining_gb=$((remaining_gb - root_gb))
+    # Get sizes for each partition
+    for part in "${partitions[@]}"; do
+        while true; do
+            local used_gb=$(printf "%.2f" $(echo "scale=2; $used_bytes/1024/1024/1024" | bc))
+            local available_gb=$(printf "%.2f" $(echo "scale=2; ($total_bytes-$used_bytes)/1024/1024/1024" | bc))
+            
+            echo "Total space: ${total_gb}G"
+            echo "Used space: ${used_gb}G"
+            echo "Available: ${available_gb}G"
+            read -p "${part} partition size (G): " size
 
-    local swap_gb=$(get_partition_size "SWAP partition size" "$remaining_gb" "SWAP_SIZE" "4G or 4096M")
-    remaining_gb=$((remaining_gb - swap_gb))
+            # Validate input
+            if [[ ! "$size" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+                log_warning "Please enter a valid number"
+                continue
+            fi
 
-    # Assign remaining space to home
-    HOME_SIZE="${remaining_gb}G"
+            # Convert input GB to bytes
+            local size_bytes=$(echo "scale=0; $size*1024*1024*1024/1" | bc)
 
-    # Show summary
+            if ((size_bytes >= (total_bytes - used_bytes))); then
+                log_warning "Size must be less than ${available_gb}G"
+                continue
+            fi
+
+            sizes+=("$size_bytes")
+            used_bytes=$((used_bytes + size_bytes))
+            break
+        done
+    done
+
+    # Assign variables with byte values
+    EFI_SIZE="${sizes[0]}"
+    ROOT_SIZE="${sizes[1]}"
+    SWAP_SIZE="${sizes[2]}"
+    HOME_SIZE="$((total_bytes - used_bytes))"
+
+    # Show summary with GB conversions
     echo
     echo "Partition Layout:"
     print_separator
-    echo "EFI:  $EFI_SIZE"
-    echo "Root: $ROOT_SIZE" 
-    echo "Swap: $SWAP_SIZE"
-    echo "Home: $HOME_SIZE (remaining space)"
+    echo "EFI:  $(printf "%.2fG" $(echo "scale=2; $EFI_SIZE/1024/1024/1024" | bc))"
+    echo "Root: $(printf "%.2fG" $(echo "scale=2; $ROOT_SIZE/1024/1024/1024" | bc))"
+    echo "Swap: $(printf "%.2fG" $(echo "scale=2; $SWAP_SIZE/1024/1024/1024" | bc))"
+    echo "Home: $(printf "%.2fG" $(echo "scale=2; $HOME_SIZE/1024/1024/1024" | bc)) (remaining space)"
     print_separator
 
     read -p "Confirm layout? (yes/no): " confirm

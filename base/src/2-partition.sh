@@ -33,14 +33,6 @@ select_disk() {
             continue
         fi
 
-        # Check disk size
-        local MIN_DISK_SIZE=10  # Minimum required disk size in GB
-        local disk_size=$(lsblk -ndo SIZE "$DISK" | tr -d 'G')
-        if (( disk_size < MIN_DISK_SIZE )); then
-            log_warning "Disk size must be at least ${MIN_DISK_SIZE}GB. Selected disk is ${disk_size}GB"
-            continue
-        fi
-
         break
     done
 
@@ -64,47 +56,102 @@ get_partition_sizes() {
     local used_bytes=0
 
     # Get partition sizes
-    local partitions=("EFI" "Root" "Swap")
     local sizes=()
 
-    # Get sizes for each partition
-    for part in "${partitions[@]}"; do
-        while true; do
-            local used_gb=$(printf "%.2f" $(echo "scale=2; $used_bytes/1024/1024/1024" | bc))
-            local available_gb=$(printf "%.2f" $(echo "scale=2; ($total_bytes-$used_bytes)/1024/1024/1024" | bc))
-            
-            echo "Total space: ${total_gb}G"
-            echo "Used space: ${used_gb}G"
-            echo "Available: ${available_gb}G"
-            read -p "${part} partition size (G): " size
+    # Get EFI partition size
+    while true; do
+        local available_bytes=$((total_bytes - used_bytes))
+        local available_gb=$(printf "%.2f" $(echo "scale=2; $available_bytes/1024/1024/1024" | bc))
+        
+        echo "Available: ${available_gb}G"
+        read -p "EFI partition size (e.g. 1G, 0.5G): " size_input
 
-            # Validate input
-            if [[ ! "$size" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
-                log_warning "Please enter a valid number"
-                continue
-            fi
+        # Remove 'G' suffix and validate input
+        size=${size_input%G}
+        if [[ ! "$size" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+            log_warning "Please enter a valid number followed by G (e.g. 5G)"
+            continue
+        fi
 
-            # Convert input GB to bytes
-            local size_bytes=$(echo "scale=0; $size*1024*1024*1024/1" | bc)
+        # Convert GB to bytes
+        local size_bytes=$(echo "scale=0; $size*1024*1024*1024/1" | bc)
 
-            if ((size_bytes >= (total_bytes - used_bytes))); then
-                log_warning "Size must be less than ${available_gb}G"
-                continue
-            fi
+        # Check if size exceeds available space
+        if ((size_bytes >= available_bytes)); then
+            log_warning "Size must be less than ${available_gb}G"
+            continue
+        fi
 
-            sizes+=("$size_bytes")
-            used_bytes=$((used_bytes + size_bytes))
-            break
-        done
+        sizes+=("$size_bytes")
+        used_bytes=$((used_bytes + size_bytes))
+        break
     done
 
-    # Assign variables with byte values
+    # Get Root partition size
+    while true; do
+        local available_bytes=$((total_bytes - used_bytes))
+        local available_gb=$(printf "%.2f" $(echo "scale=2; $available_bytes/1024/1024/1024" | bc))
+        
+        echo "Available: ${available_gb}G"
+        read -p "Root partition size (e.g. 5G): " size_input
+
+        # Remove 'G' suffix and validate input
+        size=${size_input%G}
+        if [[ ! "$size" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+            log_warning "Please enter a valid number followed by G (e.g. 5G)"
+            continue
+        fi
+
+        # Convert GB to bytes
+        local size_bytes=$(echo "scale=0; $size*1024*1024*1024/1" | bc)
+
+        # Check if size exceeds available space
+        if ((size_bytes >= available_bytes)); then
+            log_warning "Size must be less than ${available_gb}G"
+            continue
+        fi
+
+        sizes+=("$size_bytes")
+        used_bytes=$((used_bytes + size_bytes))
+        break
+    done
+
+    # Get Swap partition size
+    while true; do
+        local available_bytes=$((total_bytes - used_bytes))
+        local available_gb=$(printf "%.2f" $(echo "scale=2; $available_bytes/1024/1024/1024" | bc))
+        
+        echo "Available: ${available_gb}G"
+        read -p "Swap partition size (e.g. 5G): " size_input
+
+        # Remove 'G' suffix and validate input
+        size=${size_input%G}
+        if [[ ! "$size" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+            log_warning "Please enter a valid number followed by G (e.g. 5G)"
+            continue
+        fi
+
+        # Convert GB to bytes
+        local size_bytes=$(echo "scale=0; $size*1024*1024*1024/1" | bc)
+
+        # Check if size exceeds available space
+        if ((size_bytes >= available_bytes)); then
+            log_warning "Size must be less than ${available_gb}G"
+            continue
+        fi
+
+        sizes+=("$size_bytes")
+        used_bytes=$((used_bytes + size_bytes))
+        break
+    done
+
+    # Assign partition sizes in bytes
     EFI_SIZE="${sizes[0]}"
     ROOT_SIZE="${sizes[1]}"
     SWAP_SIZE="${sizes[2]}"
     HOME_SIZE="$((total_bytes - used_bytes))"
 
-    # Show summary with GB conversions
+    # Show partition layout summary
     echo
     echo "Partition Layout:"
     print_separator

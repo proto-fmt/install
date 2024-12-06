@@ -1,49 +1,54 @@
 #!/bin/bash
 
-clear
 source helpers.sh  # source the helper functions for logging
+
+
+# Global variable.
+# Only used in this file. 
+# Don't edit.
+DISK="" # Disk name (e.g. /dev/sda)
+
 
 # Function to let user select disk
 select_disk() {
-    # Get list of disks, excluding unwanted devices
-    local disks=($(lsblk -dpno NAME | grep -Ev "loop|sr|rom|airootfs|mmcblk.*boot[01]|mmcblk.*rpmb"))
+    clear
 
-    # Check if any disks were found
-    if [ ${#disks[@]} -eq 0 ]; then
-        log_error "No suitable disks found"
-        return 1
-    fi
-
-    # Display available disks with info
+    # Show available disks
+    print_separator
     echo "Available disks:"
-    echo "----------------"
-    local disk_info=()
-    for i in "${!disks[@]}"; do
-        disk_info[$i]=$(lsblk -dno SIZE,MODEL "${disks[$i]}")
-        echo "$((i+1))) ${disks[$i]} (${disk_info[$i]})"
-    done
-    echo "----------------"
+    lsblk -lpdo NAME,SIZE,TYPE,MODEL
+    print_separator
 
-    # Get valid disk selection from user
-    local selection
-    while true; do
-        read -p "Select disk number (1-${#disks[@]}): " selection
-        if [[ "$selection" =~ ^[0-9]+$ ]] && ((selection >= 1 && selection <= ${#disks[@]})); then
-            break
-        fi
-        log_warning "Please enter a valid number between 1 and ${#disks[@]}"
-    done
+    # Get disk selection
+    read -p "Enter disk name (e.g. /dev/sda): " DISK
 
-    DISK="${disks[$((selection-1))]}"
-    
-    # Confirmation for data erasure
-    echo -e "${RED}WARNING: All data on $DISK will be erased!${NC}"
-    echo -e "${RED}         ${disk_info[$((selection-1))]}${NC}"
-    read -p "Type 'yes' to confirm: " confirm
-    if [[ "$confirm" != "yes" ]]; then
-        log_error "Operation cancelled by user"
+    # Validate disk exists
+    if ! lsblk "$DISK" &>/dev/null; then
+        log_error "Invalid disk name: $DISK"
         return 1
     fi
+
+    # Check for system devices that shouldn't be used
+    local system_devices="loop|sr|rom|airootfs"
+    if [[ "$DISK" =~ $system_devices ]]; then
+        log_error "System device selected. This is not recommended."
+        return 1
+    fi
+
+    # Check disk size
+    local min_size=$((10 * 1024 * 1024 * 1024)) # 10GB in bytes
+    local disk_size=$(lsblk -dbno SIZE "$DISK")
+    if [ "$disk_size" -lt "$min_size" ]; then
+        log_error "Disk is too small. Minimum 10GB required"
+        return 1
+    fi
+
+    # Confirm data erasure
+    print_separator
+    echo -e "${RED}WARNING: All data on $DISK will be erased!${NC}"
+    read -p "Continue? (y/n): " confirm
+    print_separator
+    [[ "$confirm" != "y" ]] && return 1
 
     log_success "Selected disk: $DISK"
     return 0
@@ -51,57 +56,83 @@ select_disk() {
 
 # Get partition sizes from user
 get_partition_sizes() {
-    # Get total disk size in GB
-    local total_gb=$(lsblk -b "$DISK" | awk 'NR==1{printf "%.1f", $4/1024/1024/1024}')
-    local remaining=$total_gb
+    # Get total disk size in bytes and convert to GB/MB
+    local total_bytes=$(lsblk -dbno SIZE "$DISK")
+    local total_gb=$((total_bytes / 1024 / 1024 / 1024))
+    local remaining_gb=$total_gb
     
     echo "Total disk size: ${total_gb}G"
     echo
 
     # Get EFI size
     while true; do
-        read -p "EFI partition size (recommended 512M): " EFI_SIZE
-        if [[ "$EFI_SIZE" =~ ^[0-9]+M$ ]]; then
-            remaining=$(echo "$remaining - 0.5" | bc)
+        echo "Remaining space: ${remaining_gb}G"
+        read -p "EFI partition size (e.g. 512M or 1G): " efi_size
+        if [[ "$efi_size" =~ ^[0-9]+[GM]$ ]]; then
+            EFI_SIZE="$efi_size"
+            # Convert to GB for calculations
+            if [[ "$efi_size" =~ M$ ]]; then
+                local efi_gb=$(( ${efi_size%M} / 1024 ))
+            else
+                local efi_gb=${efi_size%G}
+            fi
+            remaining_gb=$((remaining_gb - efi_gb))
             break
         fi
-        log_warning "Please enter size in megabytes (e.g. 512M)"
+        log_warning "Please enter a valid size (e.g. 512M or 1G)"
     done
+    log_success "EFI partition size set to $EFI_SIZE"
 
     # Get root size
     while true; do
-        echo "Remaining space: ${remaining}G"
-        read -p "ROOT partition size in GB: " root_gb
-        if [[ "$root_gb" =~ ^[0-9]+$ ]] && [ "$root_gb" -lt "$remaining" ]; then
-            ROOT_SIZE="${root_gb}G"
-            remaining=$(echo "$remaining - $root_gb" | bc)
-            break
+        echo "Remaining space: ${remaining_gb}G"
+        read -p "ROOT partition size (e.g. 20G or 20480M): " root_size
+        if [[ "$root_size" =~ ^[0-9]+[GM]$ ]]; then
+            ROOT_SIZE="$root_size"
+            # Convert to GB for calculations
+            if [[ "$root_size" =~ M$ ]]; then
+                local root_gb=$(( ${root_size%M} / 1024 ))
+            else
+                local root_gb=${root_size%G}
+            fi
+            if [ "$root_gb" -lt "$remaining_gb" ]; then
+                remaining_gb=$((remaining_gb - root_gb))
+                break
+            fi
         fi
-        log_warning "Please enter a valid size less than ${remaining}G"
+        log_warning "Please enter a valid size less than ${remaining_gb}G"
     done
 
-    # Get swap size
+    # Get swap size 
     while true; do
-        echo "Remaining space: ${remaining}G"
-        read -p "SWAP partition size in GB: " swap_gb
-        if [[ "$swap_gb" =~ ^[0-9]+$ ]] && [ "$swap_gb" -lt "$remaining" ]; then
-            SWAP_SIZE="${swap_gb}G"
-            remaining=$(echo "$remaining - $swap_gb" | bc)
-            break
+        echo "Remaining space: ${remaining_gb}G"
+        read -p "SWAP partition size (e.g. 4G or 4096M): " swap_size
+        if [[ "$swap_size" =~ ^[0-9]+[GM]$ ]]; then
+            SWAP_SIZE="$swap_size"
+            # Convert to GB for calculations
+            if [[ "$swap_size" =~ M$ ]]; then
+                local swap_gb=$(( ${swap_size%M} / 1024 ))
+            else
+                local swap_gb=${swap_size%G}
+            fi
+            if [ "$swap_gb" -lt "$remaining_gb" ]; then
+                remaining_gb=$((remaining_gb - swap_gb))
+                break
+            fi
         fi
-        log_warning "Please enter a valid size less than ${remaining}G"
+        log_warning "Please enter a valid size less than ${remaining_gb}G"
     done
 
     # Assign remaining space to home
-    HOME_SIZE="${remaining}G"
+    HOME_SIZE="${remaining_gb}G"
 
     # Show summary
     echo
     echo "Partition Layout:"
     echo "----------------"
     echo "EFI:  $EFI_SIZE"
-    echo "Root: $ROOT_SIZE"
-    echo "Swap: $SWAP_SIZE" 
+    echo "Root: $ROOT_SIZE" 
+    echo "Swap: $SWAP_SIZE"
     echo "Home: $HOME_SIZE (remaining space)"
     echo "----------------"
 

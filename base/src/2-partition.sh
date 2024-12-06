@@ -88,18 +88,28 @@ get_partition_sizes() {
     # Get home partition size (optional)
     while true; do
         read -p "Enter HOME partition size (empty for remaining space, or e.g., 100G): " HOME_SIZE
+        
+        # Calculate total and used space
+        local total_size=$(lsblk -dno SIZE --bytes "$DISK")
+        local efi_size_bytes=$(numfmt --from=iec "$EFI_SIZE")
+        local root_size_bytes=$(numfmt --from=iec "$ROOT_SIZE")
+        local swap_size_bytes=$(numfmt --from=iec "$SWAP_SIZE")
+        local used_space=$((efi_size_bytes + root_size_bytes + swap_size_bytes))
+        
         if [[ -z "$HOME_SIZE" ]]; then
-            # Calculate remaining space in G
-            local total_size=$(lsblk -dno SIZE --bytes "$DISK")
-            local efi_size_bytes=$(numfmt --from=iec "$EFI_SIZE")
-            local root_size_bytes=$(numfmt --from=iec "$ROOT_SIZE")
-            local swap_size_bytes=$(numfmt --from=iec "$SWAP_SIZE")
-            local remaining_bytes=$((total_size - efi_size_bytes - root_size_bytes - swap_size_bytes))
+            local remaining_bytes=$((total_size - used_space))
             HOME_SIZE="$((remaining_bytes / 1024 / 1024 / 1024))G"
-            log_info "Home partition will use remaining disk space: $HOME_SIZE"
+            log_info "Home partition will use remaining disk space: $HOME_SIZE ($(numfmt --to=iec-i --suffix=B $remaining_bytes))"
             break
         elif validate_size "$HOME_SIZE" "G"; then
-            log_info "Home partition will be created with size: $HOME_SIZE"
+            local home_size_bytes=$(numfmt --from=iec "$HOME_SIZE")
+            local unused_bytes=$((total_size - used_space - home_size_bytes))
+            
+            log_info "Home partition will be created with size: $HOME_SIZE ($(numfmt --to=iec-i --suffix=B ${home_size_bytes}))"
+            
+            if ((unused_bytes > 0)); then
+                log_warning "Warning: $(numfmt --to=iec-i --suffix=B ${unused_bytes}) of disk space will remain unused"
+            fi
             break
         else
             log_warning "Please enter a valid size (e.g., 100G) or press Enter for remaining space"

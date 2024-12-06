@@ -10,17 +10,16 @@ select_disk() {
     # Check if any disks were found
     if [ ${#disks[@]} -eq 0 ]; then
         log_error "No suitable disks found"
-        exit 1
+        return 1
     fi
 
-    # Display available disks
+    # Display available disks with info
     echo "Available disks:"
     echo "----------------"
-    local i=1
-    for disk in "${disks[@]}"; do
-        local disk_info=$(lsblk -dno SIZE,MODEL "$disk")
-        echo "$i) $disk ($disk_info)"
-        ((i++))
+    local disk_info=()
+    for i in "${!disks[@]}"; do
+        disk_info[$i]=$(lsblk -dno SIZE,MODEL "${disks[$i]}")
+        echo "$((i+1))) ${disks[$i]} (${disk_info[$i]})"
     done
     echo "----------------"
 
@@ -36,14 +35,10 @@ select_disk() {
 
     DISK="${disks[$((selection-1))]}"
     
-    # Get disk info for confirmation
-    local disk_size=$(lsblk -dno SIZE "$DISK")
-    local disk_model=$(lsblk -dno MODEL "$DISK")
-    
-    # Double confirmation for data erasure
+    # Confirmation for data erasure
+    local disk_info="${disk_info[$((selection-1))]}"
     echo -e "${RED}WARNING: All data on $DISK will be erased!${NC}"
-    echo -e "${RED}         Size: $disk_size${NC}"
-    echo -e "${RED}         Model: $disk_model${NC}"
+    echo -e "${RED}         $disk_info${NC}"
     
     read -p "Type 'yes' to confirm: " confirm
     if [[ "$confirm" != "yes" ]]; then
@@ -56,10 +51,17 @@ select_disk() {
 
 # Get partition sizes from user
 get_partition_sizes() {
+    # Function to validate size format
+    validate_size() {
+        local size=$1
+        local unit=$2  # "M" or "G" or "MG" for both
+        [[ "$size" =~ ^[0-9]+[$unit]$ ]]
+    }
+
     # Get EFI partition size
     while true; do
         read -p "Enter EFI partition size (e.g., 512M, 1G): " EFI_SIZE
-        if [[ "$EFI_SIZE" =~ ^[0-9]+[MG]$ ]]; then
+        if validate_size "$EFI_SIZE" "MG"; then
             break
         fi
         log_warning "Please enter a valid size (e.g., 512M, 1G)"
@@ -67,8 +69,8 @@ get_partition_sizes() {
 
     # Get root partition size
     while true; do
-        read -p "Enter root partition size (e.g., 30G, 50G): " ROOT_SIZE
-        if [[ "$ROOT_SIZE" =~ ^[0-9]+[G]$ ]]; then
+        read -p "Enter ROOT partition size (e.g., 30G, 50G): " ROOT_SIZE
+        if validate_size "$ROOT_SIZE" "G"; then
             break
         fi
         log_warning "Please enter a valid size (e.g., 30G, 50G)"
@@ -76,21 +78,20 @@ get_partition_sizes() {
 
     # Get swap size
     while true; do
-        read -p "Enter swap partition size (e.g., 2G, 4G): " SWAP_SIZE
-        if [[ "$SWAP_SIZE" =~ ^[0-9]+[G]$ ]]; then
+        read -p "Enter SWAP partition size (e.g., 2G, 4G): " SWAP_SIZE
+        if validate_size "$SWAP_SIZE" "G"; then
             break
         fi
         log_warning "Please enter a valid size (e.g., 2G, 4G)"
     done
 
-    
     # Get home partition size (optional)
     while true; do
-        read -p "Enter home partition size (empty for remaining space, or e.g., 100G): " HOME_SIZE
+        read -p "Enter HOME partition size (empty for remaining space, or e.g., 100G): " HOME_SIZE
         if [[ -z "$HOME_SIZE" ]]; then
             log_info "Home partition will use remaining disk space"
             break
-        elif [[ "$HOME_SIZE" =~ ^[0-9]+[G]$ ]]; then
+        elif validate_size "$HOME_SIZE" "G"; then
             log_info "Home partition will be created with size: $HOME_SIZE"
             break
         else
@@ -103,39 +104,19 @@ get_partition_sizes() {
 create_partitions() {
     echo "Creating partitions on $DISK..."
     
-    # Clear existing partition table
-    if ! sgdisk -Z $DISK; then
-        log_error "Failed to clear partition table"
+    # Clear existing partition table and create new GPT
+    if ! (sgdisk -Z "$DISK" && sgdisk -o "$DISK"); then
+        log_error "Failed to initialize partition table"
         exit 1
     fi
 
-    # Create new GPT partition table
-    if ! sgdisk -o $DISK; then
-        log_error "Failed to create new GPT partition table"
-        exit 1
-    fi
-
-    # Create EFI partition
-    if ! sgdisk -n 1:0:+$EFI_SIZE -t 1:ef00 -c 1:"EFI" $DISK; then
-        log_error "Failed to create EFI partition"
-        exit 1
-    fi
-    
-    # Create swap partition
-    if ! sgdisk -n 2:0:+$SWAP_SIZE -t 2:8200 -c 2:"swap" $DISK; then
-        log_error "Failed to create swap partition"
-        exit 1
-    fi
-    
-    # Create root partition
-    if ! sgdisk -n 3:0:+$ROOT_SIZE -t 3:8300 -c 3:"root" $DISK; then
-        log_error "Failed to create root partition"
-        exit 1
-    fi
-
-    # Create home partition (use remaining space)
-    if ! sgdisk -n 4:0:0 -t 4:8300 -c 4:"home" $DISK; then
-        log_error "Failed to create home partition"
+    # Create all partitions in one command
+    if ! sgdisk "$DISK" \
+        -n 1:0:+"$EFI_SIZE" -t 1:ef00 -c 1:"EFI" \
+        -n 2:0:+"$SWAP_SIZE" -t 2:8200 -c 2:"SWAP" \
+        -n 3:0:+"$ROOT_SIZE" -t 3:8300 -c 3:"root" \
+        -n 4:0:0 -t 4:8300 -c 4:"home"; then
+        log_error "Failed to create partitions"
         exit 1
     fi
 

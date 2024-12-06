@@ -37,7 +37,7 @@ select_disk() {
     done
 
     # Confirm data erasure
-    echo -e "${RED}WARNING: All data on $DISK (${lsblk -ndo SIZE "$DISK"}) will be erased!${NC}"
+    echo -e "${RED}WARNING: All data on $DISK ($(lsblk -ndo SIZE "$DISK")) will be erased!${NC}"
     read -p "Continue? (y/n): " confirm
     if [[ "$confirm" != "y" ]]; then
         log_error "Canceled by user"
